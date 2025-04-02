@@ -35,3 +35,5 @@ cd build/bin
 #### Further work
 
 Please introduce and push all changes from audio2.lmi.link! This github repo is synced to the directory audio_project_rpi on pi@audio2.lmi.link. 
+The other RPis can be updated using the script `deploy_binary.sh` from the directory: `remotetesting`.
+Build everything on one RPi and send the appropriate binaries over the network to the other RPis.
