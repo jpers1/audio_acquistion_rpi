@@ -50,11 +50,6 @@ typedef float SAMPLE;                 // Audio sample type
  ******************************************************************************/
 volatile sig_atomic_t keepRunning = 1;
 
-/******************************************************************************
- * Add global for PortAudio timing (same as original)
- ******************************************************************************/
-static PaTime          streamStartTime = 0.0; 
-static struct timespec utcStartStreamTime;
 
 /******************************************************************************
  * Timestamped sample struct
@@ -67,7 +62,11 @@ typedef struct
 
 
 /******************************************************************************
- * WAVE header struct (unchanged)
+ * WAVE header struct
+ * 
+ * This minimal header is for 32-bit float audio:
+ *   - audioFormat = 3  => IEEE float
+ *   - bitsPerSample = 32
  ******************************************************************************/
 #pragma pack(push, 1)
 typedef struct
@@ -155,7 +154,17 @@ static SAMPLE sampleSilence[FRAMES_PER_BUFFER * NUM_CHANNELS] = { 0.0f };
 
 
 /******************************************************************************
- * WAVE Helpers (unchanged)
+ * WAVE Helpers
+ *
+ * openWavFile():
+ *    - Initializes a WavHeader for 32-bit float data
+ *    - Writes the header with placeholder sizes
+ *    - Returns FILE*
+ *
+ * finalizeWavFile():
+ *    - Updates chunk sizes in the header
+ *    - Rewrites them at the start of the file
+ *    - Closes the file
  ******************************************************************************/
 static FILE* openWavFile(const char* filename, WavHeader* header)
 {
@@ -205,7 +214,7 @@ static void finalizeWavFile(FILE* fp, WavHeader* header, uint64_t totalSamples)
 
 
 /******************************************************************************
- * streamCallback for Audio (FIXED TIMESTAMPING LOGIC)
+ * streamCallback for Audio (with timestamps)
  ******************************************************************************/
 static int streamCallback(const void *inputBuffer,
                           void       *outputBuffer,
@@ -227,14 +236,11 @@ static int streamCallback(const void *inputBuffer,
     static TimestampedSample ringBlock[FRAMES_PER_BUFFER * NUM_CHANNELS];
     static SAMPLE processedBlock[FRAMES_PER_BUFFER * NUM_CHANNELS];
 
-    /*
-     * ----------------------------------------------------------------------------
-     * Use EXACTLY the same approach as your original code:
-     *   - 'PaTime inputAdcTime = timeInfo->inputBufferAdcTime - streamStartTime;'
-     *   - Then for each sample i, add i * (1/SAMPLE_RATE) / NUM_CHANNELS.
-     * ----------------------------------------------------------------------------
-     */
-    PaTime inputAdcTime = timeInfo->inputBufferAdcTime - streamStartTime;
+    // Get timing info once per callback block (REALTIME clock)
+    struct timespec current_time;
+    clock_gettime(CLOCK_REALTIME, &current_time);
+    double frame_start_time = (double)current_time.tv_sec
+                              + (double)current_time.tv_nsec / 1.0e9;
     double sample_time_interval = 1.0 / (double)SAMPLE_RATE;
 
     // Choose finalBlock pointer
@@ -327,10 +333,8 @@ static int streamCallback(const void *inputBuffer,
         for (unsigned long i = 0; i < elementsToWrite; i++)
         {
             ringBlock[i].sample = finalBlock[i];
-
-            // same logic: for sample i, time offset = inputAdcTime + i/NUM_CHANNELS * sample_time_interval
-            double precise_time = inputAdcTime
-                + ((double)(i / NUM_CHANNELS) * sample_time_interval);
+            double precise_time = frame_start_time
+                                + ((double)(i / NUM_CHANNELS) * sample_time_interval);
 
             ringBlock[i].timestamp.tv_sec  = (time_t)precise_time;
             ringBlock[i].timestamp.tv_nsec =
@@ -340,13 +344,14 @@ static int streamCallback(const void *inputBuffer,
         PaUtil_WriteRingBuffer(&data->ringBuffer, ringBlock, elementsToWrite);
     }
 
+    (void)timeInfo;
     (void)statusFlags;
     return paContinue;
 }
 
 
 /******************************************************************************
- * Compass / Pitch Reading (unchanged)
+ * Compass / Pitch Reading (unchanged from original)
  ******************************************************************************/
 static int fdCompass = -1;
 static double pitchValue = 0.0;
@@ -371,9 +376,9 @@ static int configurePort(int fd)
     options.c_cflag &= ~PARENB; // no parity
     options.c_cflag &= ~CSTOPB; // 1 stop bit
     options.c_cflag &= ~CSIZE;
-    options.c_cflag |= CS8;
-    options.c_cflag |= CREAD;
-    options.c_cflag |= CLOCAL;
+    options.c_cflag |= CS8;     
+    options.c_cflag |= CREAD;   
+    options.c_cflag |= CLOCAL;  
 
     options.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
     options.c_oflag &= ~OPOST;
@@ -442,7 +447,7 @@ static void readCompassPitch(void)
 
 
 /******************************************************************************
- * moveCursorUp() - to avoid scrolling (unchanged)
+ * moveCursorUp() - to avoid scrolling
  ******************************************************************************/
 static void moveCursorUp(int lines)
 {
@@ -452,8 +457,8 @@ static void moveCursorUp(int lines)
 
 
 /******************************************************************************
- *
- * Microphone Characteristic Storage (unchanged)
+ * 
+ * Microphone Characteristic Storage
  *
  ******************************************************************************/
 static double accumAmpDB[46];
@@ -462,7 +467,7 @@ static unsigned accumCount[46];
 
 
 /******************************************************************************
- * Print Usage (unchanged)
+ * Print Usage
  ******************************************************************************/
 static void printUsage(const char* progName)
 {
@@ -485,7 +490,9 @@ static void printUsage(const char* progName)
 
 
 /******************************************************************************
- * Simple Monotonic Clock Helper (unchanged)
+ * Simple Monotonic Clock Helper
+ *
+ * We'll use this for the --duration logic, so we don't rely on PortAudio
  ******************************************************************************/
 static double getMonotonicSeconds(void)
 {
@@ -762,30 +769,6 @@ int main(int argc, char *argv[])
     if (err != paNoError)
         goto error2;
 
-    /****************************************************************************
-     * ADD the same logic for storing the absolute UTC start time.
-     * This matches your original code's approach.
-     ***************************************************************************/
-    clock_gettime(CLOCK_REALTIME, &utcStartStreamTime);
-    streamStartTime = Pa_GetStreamTime(stream);  // reference point for inputAdcTime
-
-    // Write to utc_start_stream.txt (same format as original code)
-    {
-        FILE *utcFile = fopen("utc_start_stream.txt", "w");
-        if (utcFile)
-        {
-            fprintf(utcFile, "%ld.%09ld\n",
-                    (long)utcStartStreamTime.tv_sec,
-                    (long)utcStartStreamTime.tv_nsec);
-            fclose(utcFile);
-        }
-        else
-        {
-            fprintf(stderr, "Error: Could not open utc_start_stream.txt for writing.\n");
-        }
-    }
-    /****************************************************************************/
-
     err = Pa_StartStream(stream);
     if (err != paNoError)
         goto error1;
@@ -855,7 +838,6 @@ int main(int argc, char *argv[])
                 fwrite(&file_buffer[i].sample, sizeof(float), 1, audioData.wavFile);
                 audioData.totalSamplesWritten += 1;
 
-                // EXACT SAME FORMAT for timestamps:
                 fprintf(audioData.timestampFile, "%ld.%09ld\n",
                         (long)file_buffer[i].timestamp.tv_sec,
                         (long)file_buffer[i].timestamp.tv_nsec);
@@ -932,7 +914,7 @@ int main(int argc, char *argv[])
                 {
                     if (numBarChannels == 2)
                     {
-                        printf("Channel %d:\n", ch);
+                        printf("Channel %d:\n", ch);  
                     }
 
                     if (countS[ch] == 0)

@@ -55,7 +55,6 @@ target_link_libraries(thread_example pthread)
 target_link_libraries(aoa_test sndfile fftw3 m)
 target_link_libraries(record_example portaudio asound m pthread)
 target_link_libraries(continuous_capture portaudio asound m pthread)
-target_link_libraries(basis_audio_program_processing portaudio asound m pthread)
 
 
 
